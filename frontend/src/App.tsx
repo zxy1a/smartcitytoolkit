@@ -9,9 +9,11 @@ function App() {
     budgetRange: '',
   });
 
-  const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const { name, value } = e.target;
+  setFormData({ ...formData, [name]: value });
+};
+
 
   const handleSubmit = async () => {
     await fetch('http://localhost:8000/submit', {
