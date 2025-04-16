@@ -1,3 +1,15 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+/* 添加一些动画效果 */
+button {
+  transition: background-color 0.2s ease;
+}
+
+.recommendation-card {
+  transition: transform 0.2s ease;
+}
+
+.recommendation-card:hover {
+  transform: translateY(-2px);
+}
