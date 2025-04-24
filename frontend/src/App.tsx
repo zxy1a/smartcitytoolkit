@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import MatchRadar from './components/MatchRadar';
+import WeightSliders from './components/WeightSliders';
 
 interface Recommendation {
   score: number;
@@ -8,6 +10,9 @@ interface Recommendation {
   city_size: string;
   budget_range: number[];
   match_reasons: string[];
+  match_breakdown: {
+    [key: string]: number; // e.g. { "tech": 0.8, "budget": 1, "latency": 0.6 }
+  };
 }
 
 function App() {
@@ -20,6 +25,14 @@ function App() {
     citySize: 'large',
     budgetRange: '[500000, 1000000]'
   });
+  const [weights, setWeights] = useState({
+  scenario: 0.2,
+  tech_req: 0.2,
+  tech_stack: 0.2,
+  city_size: 0.2,
+  budget: 0.2,
+});
+
 
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -50,7 +63,9 @@ function App() {
         }),
         technologyStack: formData.technologyStack,
         citySize: formData.citySize,
-        budgetRange: formData.budgetRange
+        budgetRange: formData.budgetRange,
+
+        weights: weights
       };
 
       const response = await fetch("http://localhost:8000/analyze", {
@@ -82,7 +97,7 @@ function App() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
       <div className="w-full max-w-xl p-6 bg-white rounded-2xl shadow">
-        <h2 className="text-2xl font-bold mb-4">Smart City Blockchain Tool</h2>
+        <h2 className="text-2xl font-bold mb-4 text-center">CityChain Advisor</h2>
 
         {error && <div className="mb-4 text-red-500">{error}</div>}
 
@@ -184,6 +199,11 @@ function App() {
           </div>
         </div>
 
+        <div className="mt-6">
+          <h4 className="font-medium mb-2">Adjust Match Weights</h4>
+          <WeightSliders weights={weights} onChange={setWeights}/>
+        </div>
+
         <button
           onClick={handleAnalyze}
           disabled={isLoading}
@@ -201,7 +221,8 @@ function App() {
                   <div className="flex justify-between items-start mb-2">
                     <h4 className="font-medium">{rec.case_name}</h4>
                     <span className="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded">
-                      Score: {rec.score}
+                      {/*Score: {rec.score}*/}
+                      Score: {rec.score.toFixed(2)}
                     </span>
                   </div>
                   <p className="text-sm mb-2">{rec.application_scenarios}</p>
@@ -213,6 +234,19 @@ function App() {
                       {rec.match_reasons.join(' • ')}
                     </div>
                   </div>
+
+                  {rec.match_breakdown && (
+                      <div className="mt-4">
+                        <MatchRadar
+                            scores={Object.entries(rec.match_breakdown).map(([key, value]) => ({
+                              metric: key,
+                              value: value
+                            }))}
+                        />
+                      </div>
+                  )}
+
+
                 </div>
               ))}
             </div>

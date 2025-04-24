@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Text, TIMESTAMP, func
 from sqlalchemy.orm import sessionmaker, Session, declarative_base
@@ -7,6 +7,8 @@ import os
 import json
 from typing import List, Dict
 from .database import Base
+from typing import Optional, Dict
+
 
 # ------------ Database Setup ------------
 Base = declarative_base()
@@ -59,7 +61,16 @@ class Submission(BaseModel):
     technologyStack: str  # Comma-separated string
     citySize: str
     budgetRange: str  # JSON array string
+    weights: Optional[Dict[str, float]] = None
 
+    @field_validator('weights')
+    @classmethod
+    def check_weight_sum(cls, v):
+        if v is not None:
+            total = sum(v.values())
+            if total > 1:
+                raise ValueError(f"Sum of weights cannot exceed 1. Currently: {total}")
+        return v
 def get_db():
     db = SessionLocal()
     try:
@@ -238,6 +249,64 @@ class CaseMatcher:
         return reasons[:3]  # Return top 3 reasons
 
 # ------------ API Endpoints ------------
+# @app.post("/analyze")
+# def analyze(data: Submission, db: Session = Depends(get_db)):
+#     # Store submission
+#     submission = CaseSubmission(
+#         application_scenarios=data.applicationScenarios,
+#         technical_requirements=data.technicalRequirements,
+#         technology_stack=data.technologyStack,
+#         city_size=data.citySize,
+#         budget_range=data.budgetRange
+#     )
+#     db.add(submission)
+#     db.commit()
+#     db.refresh(submission)
+#
+#     # Get all reference cases
+#     cases = db.query(BlockchainCase).all()
+#
+#     # Initialize matcher
+#     matcher = CaseMatcher()
+#     user_data = matcher.parse_input(data)
+#
+#     # Score and sort cases
+#     scored_cases = []
+#     for case in cases:
+#         try:
+#             score = matcher.calculate_similarity(user_data, case)
+#             scored_cases.append((score, case))
+#         except Exception as e:
+#             print(f"Error processing case {case.id}: {str(e)}")
+#
+#     # Sort by descending score
+#     scored_cases.sort(reverse=True, key=lambda x: x[0])
+#
+#     results = []
+#     for score, case in scored_cases[:3]:  # Top 3 matches
+#         try:
+#             case_data = matcher.parse_case(case)
+#             # 确保 budget_range 是数字列表
+#             budget_range = [float(x) for x in case_data['budget_range']] if isinstance(case_data['budget_range'],
+#                                                                                        list) else [0.0, 0.0]
+#
+#             results.append({
+#                 "score": round(float(score), 2),
+#                 "case_name": case.case_name,
+#                 "application_scenarios": case.application_scenarios,
+#                 "technology_stack": case_data['technology_stack'],
+#                 "city_size": case.city_size,
+#                 "budget_range": budget_range,
+#                 "match_reasons": matcher._get_match_reasons(user_data, case_data)
+#             })
+#         except Exception as e:
+#             print(f"Error formatting result for case {case.id}: {str(e)}")
+#             continue
+#
+#     return {
+#         "submission_id": submission.id,
+#         "recommendations": results
+#     }
 @app.post("/analyze")
 def analyze(data: Submission, db: Session = Depends(get_db)):
     # Store submission
@@ -257,14 +326,25 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
 
     # Initialize matcher
     matcher = CaseMatcher()
+    if data.weights:
+        matcher.weights = data.weights
+
     user_data = matcher.parse_input(data)
 
     # Score and sort cases
     scored_cases = []
     for case in cases:
         try:
-            score = matcher.calculate_similarity(user_data, case)
-            scored_cases.append((score, case))
+            case_data = matcher.parse_case(case)
+            scores = {
+                'scenario': matcher._text_match(user_data['application_scenarios'], case_data['application_scenarios']),
+                'tech_req': matcher._tech_requirement_match(user_data['technical_requirements'], case_data['technical_requirements']),
+                'tech_stack': matcher._tech_stack_match(user_data['technology_stack'], case_data['technology_stack']),
+                'city_size': 1.0 if user_data['city_size'] == case_data['city_size'] else 0.3,
+                'budget': matcher._budget_match(user_data['budget_range'], case_data['budget_range']),
+            }
+            total_score = sum(scores[k] * matcher.weights[k] for k in scores)
+            scored_cases.append((total_score, case, scores))  # ⬅ 加上 scores
         except Exception as e:
             print(f"Error processing case {case.id}: {str(e)}")
 
@@ -272,12 +352,11 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
     scored_cases.sort(reverse=True, key=lambda x: x[0])
 
     results = []
-    for score, case in scored_cases[:3]:  # Top 3 matches
+    for score, case, breakdown in scored_cases[:3]:  # Top 3 matches
         try:
             case_data = matcher.parse_case(case)
-            # 确保 budget_range 是数字列表
-            budget_range = [float(x) for x in case_data['budget_range']] if isinstance(case_data['budget_range'],
-                                                                                       list) else [0.0, 0.0]
+
+            budget_range = [float(x) for x in case_data['budget_range']] if isinstance(case_data['budget_range'], list) else [0.0, 0.0]
 
             results.append({
                 "score": round(float(score), 2),
@@ -286,8 +365,17 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
                 "technology_stack": case_data['technology_stack'],
                 "city_size": case.city_size,
                 "budget_range": budget_range,
-                "match_reasons": matcher._get_match_reasons(user_data, case_data)
+                "match_reasons": matcher._get_match_reasons(user_data, case_data),
+
+                "match_breakdown": {
+                    "scenario": breakdown["scenario"],
+                    "tech_req": breakdown["tech_req"],
+                    "tech_stack": breakdown["tech_stack"],
+                    "city_size": breakdown["city_size"],
+                    "budget": breakdown["budget"]
+                }
             })
+
         except Exception as e:
             print(f"Error formatting result for case {case.id}: {str(e)}")
             continue
@@ -296,29 +384,3 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
         "submission_id": submission.id,
         "recommendations": results
     }
-
-
-# def _get_match_reasons(self, user: dict, case: dict) -> List[str]:
-#     """Generate human-readable match reasons"""
-#     reasons = []
-#
-#     # City size match
-#     if user['city_size'] == case['city_size']:
-#         reasons.append("City size match")
-#
-#     # Budget overlap
-#     user_min, user_max = user['budget_range']
-#     case_min, case_max = case['budget_range']
-#     if case_min <= user_max and case_max >= user_min:
-#         reasons.append("Budget range compatible")
-#
-#     # Technology stack overlap
-#     common_tech = set(user['technology_stack']) & set(case['technology_stack'])
-#     if common_tech:
-#         reasons.append(f"Common technologies: {', '.join(common_tech)}")
-#
-#     # Security level match
-#     if user['technical_requirements']['security_level'] == case['technical_requirements']['security_level']:
-#         reasons.append("Security level match")
-#
-#     return reasons[:3]  # Return top 3 reasons
