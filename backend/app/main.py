@@ -7,7 +7,12 @@ import os
 import json
 from typing import List, Dict
 from .database import Base
+from .recommender import recommend_solution
 from typing import Optional, Dict
+from fastapi.responses import HTMLResponse, FileResponse
+from .report_generator import generate_report_html, save_html_report
+import tempfile
+import pdfkit
 
 
 # ------------ Database Setup ------------
@@ -248,65 +253,6 @@ class CaseMatcher:
 
         return reasons[:3]  # Return top 3 reasons
 
-# ------------ API Endpoints ------------
-# @app.post("/analyze")
-# def analyze(data: Submission, db: Session = Depends(get_db)):
-#     # Store submission
-#     submission = CaseSubmission(
-#         application_scenarios=data.applicationScenarios,
-#         technical_requirements=data.technicalRequirements,
-#         technology_stack=data.technologyStack,
-#         city_size=data.citySize,
-#         budget_range=data.budgetRange
-#     )
-#     db.add(submission)
-#     db.commit()
-#     db.refresh(submission)
-#
-#     # Get all reference cases
-#     cases = db.query(BlockchainCase).all()
-#
-#     # Initialize matcher
-#     matcher = CaseMatcher()
-#     user_data = matcher.parse_input(data)
-#
-#     # Score and sort cases
-#     scored_cases = []
-#     for case in cases:
-#         try:
-#             score = matcher.calculate_similarity(user_data, case)
-#             scored_cases.append((score, case))
-#         except Exception as e:
-#             print(f"Error processing case {case.id}: {str(e)}")
-#
-#     # Sort by descending score
-#     scored_cases.sort(reverse=True, key=lambda x: x[0])
-#
-#     results = []
-#     for score, case in scored_cases[:3]:  # Top 3 matches
-#         try:
-#             case_data = matcher.parse_case(case)
-#             # 确保 budget_range 是数字列表
-#             budget_range = [float(x) for x in case_data['budget_range']] if isinstance(case_data['budget_range'],
-#                                                                                        list) else [0.0, 0.0]
-#
-#             results.append({
-#                 "score": round(float(score), 2),
-#                 "case_name": case.case_name,
-#                 "application_scenarios": case.application_scenarios,
-#                 "technology_stack": case_data['technology_stack'],
-#                 "city_size": case.city_size,
-#                 "budget_range": budget_range,
-#                 "match_reasons": matcher._get_match_reasons(user_data, case_data)
-#             })
-#         except Exception as e:
-#             print(f"Error formatting result for case {case.id}: {str(e)}")
-#             continue
-#
-#     return {
-#         "submission_id": submission.id,
-#         "recommendations": results
-#     }
 @app.post("/analyze")
 def analyze(data: Submission, db: Session = Depends(get_db)):
     # Store submission
@@ -382,5 +328,66 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
 
     return {
         "submission_id": submission.id,
-        "recommendations": results
+        "recommendations": results,
+        "system_recommendation": recommend_solution(user_data)
     }
+@app.get("/generate_report/{submission_id}", response_class=HTMLResponse)
+def generate_report(submission_id: int, db: Session = Depends(get_db)):
+    # 获取提交记录
+    submission = db.query(CaseSubmission).filter(CaseSubmission.id == submission_id).first()
+    if not submission:
+        return HTMLResponse(content="Submission not found", status_code=404)
+
+    # 获取推荐结果（复用分析逻辑）
+    cases = db.query(BlockchainCase).all()
+    matcher = CaseMatcher()
+    user_data = matcher.parse_input(Submission(
+        applicationScenarios=submission.application_scenarios,
+        technicalRequirements=submission.technical_requirements,
+        technologyStack=submission.technology_stack,
+        citySize=submission.city_size,
+        budgetRange=submission.budget_range
+    ))
+    scored = [(matcher.calculate_similarity(user_data, c), c) for c in cases]
+    top_cases = sorted(scored, key=lambda x: -x[0])[:3]
+    parsed_cases = [matcher.parse_case(c[1]) | {'case_name': c[1].case_name} for c in top_cases]
+
+    html_content = generate_report_html(
+        submission=user_data,
+        recommendation=recommend_solution(user_data),
+        cases=parsed_cases
+    )
+    return HTMLResponse(content=html_content)
+
+@app.get("/download_pdf/{submission_id}")
+def download_pdf(submission_id: int, db: Session = Depends(get_db)):
+    # 获取提交记录
+    submission = db.query(CaseSubmission).filter(CaseSubmission.id == submission_id).first()
+    if not submission:
+        return HTMLResponse(content="Submission not found", status_code=404)
+
+    # 获取推荐结果
+    cases = db.query(BlockchainCase).all()
+    matcher = CaseMatcher()
+    user_data = matcher.parse_input(Submission(
+        applicationScenarios=submission.application_scenarios,
+        technicalRequirements=submission.technical_requirements,
+        technologyStack=submission.technology_stack,
+        citySize=submission.city_size,
+        budgetRange=submission.budget_range
+    ))
+    scored = [(matcher.calculate_similarity(user_data, c), c) for c in cases]
+    top_cases = sorted(scored, key=lambda x: -x[0])[:3]
+    parsed_cases = [matcher.parse_case(c[1]) | {'case_name': c[1].case_name} for c in top_cases]
+
+    # 生成 HTML
+    html = generate_report_html(
+        submission=user_data,
+        recommendation=recommend_solution(user_data),
+        cases=parsed_cases
+    )
+
+    # 保存为 PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+        pdfkit.from_string(html, tmpfile.name)
+        return FileResponse(tmpfile.name, filename=f"report_{submission_id}.pdf", media_type='application/pdf')
