@@ -1,6 +1,7 @@
 import React, {useState} from 'react';
 import MatchRadar from './components/MatchRadar';
 import WeightSliders from './components/WeightSliders';
+import classNames from 'classnames';
 
 interface Recommendation {
     score: number;
@@ -47,6 +48,37 @@ function App() {
                 ? Number(value)
                 : value
         }));
+    };
+
+    const scenarioTags = [
+        "Energy Grid",
+        "Insurance",
+        "Healthcare",
+        "Tourism",
+        "Supply Chain",
+        "Logistics",
+        "Smart Traffic",
+        "Land Registry"
+    ];
+
+// 内部 state（你已有的 formData 不用改）
+    const [selectedTags, setSelectedTags] = useState<string[]>([]);
+
+// 新增处理函数
+    const toggleTag = (tag: string) => {
+        setSelectedTags((prev) => {
+            const updated = prev.includes(tag)
+                ? prev.filter((t) => t !== tag)
+                : [...prev, tag];
+
+            // 同步更新到 formData
+            setFormData((prevForm) => ({
+                ...prevForm,
+                applicationScenarios: updated.join(", ")
+            }));
+
+            return updated;
+        });
     };
 
     const handleAnalyze = async () => {
@@ -110,12 +142,32 @@ function App() {
                 <div className="space-y-4">
                     <div>
                         <label className="block mb-1 font-medium">Application Scenarios</label>
+                        <div className="flex flex-wrap gap-2 mb-2">
+                            {scenarioTags.map((tag) => (
+                                <button
+                                    key={tag}
+                                    type="button"
+                                    className={classNames(
+                                        "px-3 py-1 text-sm rounded-none border transition",
+                                        selectedTags.includes(tag)
+                                            ? "bg-green-500 text-white border-green-600"
+                                            : "bg-gray-100 text-gray-800 border-gray-300 hover:bg-green-100"
+                                    )}
+
+                                    onClick={() => toggleTag(tag)}
+                                >
+                                    {tag}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Free-form textarea */}
                         <textarea
                             name="applicationScenarios"
                             value={formData.applicationScenarios}
                             onChange={handleChange}
                             className="w-full p-2 border rounded"
-                            placeholder="Describe your application scenarios..."
+                            placeholder="Describe your application scenarios or select from tags..."
                             rows={4}
                         />
                     </div>
