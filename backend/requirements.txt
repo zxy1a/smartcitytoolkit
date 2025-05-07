@@ -7,3 +7,8 @@ sqlalchemy
 Jinja2==3.1.6
 MarkupSafe==2.1.5
 pdfkit
+torch==2.0.1
+sentence-transformers==2.2.2
+scikit-learn==1.3.0
+huggingface_hub==0.10.1
+numpy==1.24.4

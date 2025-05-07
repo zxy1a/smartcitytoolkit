@@ -6,14 +6,16 @@ from sqlalchemy.orm import sessionmaker, Session, declarative_base
 import os
 import json
 from typing import List, Dict
-from .database import Base
 from .recommender import recommend_solution
 from typing import Optional, Dict
 from fastapi.responses import HTMLResponse, FileResponse
 from .report_generator import generate_report_html, save_html_report
 import tempfile
 import pdfkit
-
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import math
 
 # ------------ Database Setup ------------
 Base = declarative_base()
@@ -93,20 +95,17 @@ class CaseMatcher:
             'city_size': 0.15,
             'budget': 0.1
         }
-
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
     def parse_input(self, data: Submission) -> dict:
         try:
-            # 处理 technical_requirements
             tech_req = data.technicalRequirements
             if isinstance(tech_req, str):
                 tech_req = json.loads(tech_req)
 
-            # 处理 technology_stack
             tech_stack = data.technologyStack
             if isinstance(tech_stack, str):
                 tech_stack = [t.strip() for t in tech_stack.split(',')]
 
-            # 处理 budget_range
             budget = data.budgetRange
             if isinstance(budget, str):
                 budget = json.loads(budget)
@@ -145,15 +144,6 @@ class CaseMatcher:
 
         return sum(scores[k] * self.weights[k] for k in scores)
 
-    # def parse_case(self, case: BlockchainCase) -> dict:
-    #     """Parse database case into structured data"""
-    #     return {
-    #         'application_scenarios': case.application_scenarios,
-    #         'technical_requirements': json.loads(case.technical_requirements),
-    #         'technology_stack': json.loads(case.technology_stack),
-    #         'city_size': case.city_size,
-    #         'budget_range': json.loads(case.budget_range)
-    #     }
     def parse_case(self, case: BlockchainCase) -> dict:
         """Parse database case into structured data"""
         try:
@@ -175,7 +165,6 @@ class CaseMatcher:
             }
         except Exception as e:
             print(f"Error parsing case {case.id}: {str(e)}")
-            # 返回默认值以防出错
             return {
                 'application_scenarios': case.application_scenarios,
                 'technical_requirements': {},
@@ -185,20 +174,28 @@ class CaseMatcher:
             }
 
     def _text_match(self, text1: str, text2: str) -> float:
-        """Simple text similarity using word overlap"""
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
-        common = words1 & words2
-        return len(common) / max(len(words1), 1)
+        """text similarity"""
+        try:
+            embeddings = self.model.encode([text1, text2])
+            sim = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+            return float(sim)
+        except Exception as e:
+            print(f"Text match error: {str(e)}")
+            return 0.0
+
+    @staticmethod
+    def gaussian_similarity(x, y, sigma=0.2):
+        return math.exp(- ((x - y) ** 2) / (2 * sigma ** 2))
 
     def _tech_requirement_match(self, user: dict, case: dict) -> float:
-        """Technical requirements matching"""
-        tps_score = min(user['tps'], case['tps']) / max(user['tps'], case['tps'], 1)
-        latency_score = 1 - abs(user['latency'] - case['latency']) / max(
-            user['latency'], case['latency'], 1)
-        security_levels = ['low', 'medium', 'high']
-        sec_score = 1 - abs(security_levels.index(user['security_level']) -
-                            security_levels.index(case['security_level'])) / 3
+        tps_score = self.gaussian_similarity(user['tps'], case['tps'], sigma=500)
+        latency_score = self.gaussian_similarity(user['latency'], case['latency'], sigma=100)
+
+        # 安全等级模糊匹配
+        sec_levels = {'low': 0, 'medium': 1, 'high': 2}
+        sec_diff = abs(sec_levels[user['security_level']] - sec_levels[case['security_level']])
+        sec_score = 1 - sec_diff / 2  # 两级误差就归为0分
+
         return 0.4 * tps_score + 0.3 * latency_score + 0.3 * sec_score
 
     def _tech_stack_match(self, user_stack: list, case_stack: list) -> float:
@@ -253,9 +250,87 @@ class CaseMatcher:
 
         return reasons[:3]  # Return top 3 reasons
 
+# @app.post("/analyze")
+# def analyze(data: Submission, db: Session = Depends(get_db)):
+#     # Store submission
+#     submission = CaseSubmission(
+#         application_scenarios=data.applicationScenarios,
+#         technical_requirements=data.technicalRequirements,
+#         technology_stack=data.technologyStack,
+#         city_size=data.citySize,
+#         budget_range=data.budgetRange
+#     )
+#     db.add(submission)
+#     db.commit()
+#     db.refresh(submission)
+#
+#     # Get all reference cases
+#     cases = db.query(BlockchainCase).all()
+#
+#     # Initialize matcher
+#     matcher = CaseMatcher()
+#     if data.weights:
+#         matcher.weights = data.weights
+#
+#     user_data = matcher.parse_input(data)
+#
+#     # Score and sort cases
+#     scored_cases = []
+#     for case in cases:
+#         try:
+#             case_data = matcher.parse_case(case)
+#             scores = {
+#                 'scenario': matcher._text_match(user_data['application_scenarios'], case_data['application_scenarios']),
+#                 'tech_req': matcher._tech_requirement_match(user_data['technical_requirements'], case_data['technical_requirements']),
+#                 'tech_stack': matcher._tech_stack_match(user_data['technology_stack'], case_data['technology_stack']),
+#                 'city_size': 1.0 if user_data['city_size'] == case_data['city_size'] else 0.3,
+#                 'budget': matcher._budget_match(user_data['budget_range'], case_data['budget_range']),
+#             }
+#             total_score = sum(scores[k] * matcher.weights[k] for k in scores)
+#             scored_cases.append((total_score, case, scores))  # ⬅ 加上 scores
+#         except Exception as e:
+#             print(f"Error processing case {case.id}: {str(e)}")
+#
+#     # Sort by descending score
+#     scored_cases.sort(reverse=True, key=lambda x: x[0])
+#
+#     results = []
+#     for score, case, breakdown in scored_cases[:3]:  # Top 3 matches
+#         try:
+#             case_data = matcher.parse_case(case)
+#
+#             budget_range = [float(x) for x in case_data['budget_range']] if isinstance(case_data['budget_range'], list) else [0.0, 0.0]
+#
+#             results.append({
+#                 "score": round(float(score), 2),
+#                 "case_name": case.case_name,
+#                 "application_scenarios": case.application_scenarios,
+#                 "technology_stack": case_data['technology_stack'],
+#                 "city_size": case.city_size,
+#                 "budget_range": budget_range,
+#                 "match_reasons": matcher._get_match_reasons(user_data, case_data),
+#
+#                 "match_breakdown": {
+#                     "scenario": breakdown["scenario"],
+#                     "tech_req": breakdown["tech_req"],
+#                     "tech_stack": breakdown["tech_stack"],
+#                     "city_size": breakdown["city_size"],
+#                     "budget": breakdown["budget"]
+#                 }
+#             })
+#
+#         except Exception as e:
+#             print(f"Error formatting result for case {case.id}: {str(e)}")
+#             continue
+#
+#     return {
+#         "submission_id": submission.id,
+#         "recommendations": results,
+#         "system_recommendation": recommend_solution(user_data)
+#     }
 @app.post("/analyze")
 def analyze(data: Submission, db: Session = Depends(get_db)):
-    # Store submission
+    # 保存提交记录
     submission = CaseSubmission(
         application_scenarios=data.applicationScenarios,
         technical_requirements=data.technicalRequirements,
@@ -267,41 +342,48 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(submission)
 
-    # Get all reference cases
-    cases = db.query(BlockchainCase).all()
+    # 加载所有案例
+    all_cases = db.query(BlockchainCase).all()
 
-    # Initialize matcher
+    # 初始化匹配器
     matcher = CaseMatcher()
     if data.weights:
         matcher.weights = data.weights
 
     user_data = matcher.parse_input(data)
 
-    # Score and sort cases
+    # Step 1: 应用场景预筛选
+    SCENARIO_THRESHOLD = 0.6  # 可根据实际调整
+    scenario_matches = []
+    for case in all_cases:
+        sim_score = matcher._text_match(user_data['application_scenarios'], case.application_scenarios)
+        if sim_score >= SCENARIO_THRESHOLD:
+            scenario_matches.append((sim_score, case))
+
+    # Step 2: 对通过预筛选的案例进行全维度打分
     scored_cases = []
-    for case in cases:
+    for scenario_score, case in scenario_matches:
         try:
             case_data = matcher.parse_case(case)
             scores = {
-                'scenario': matcher._text_match(user_data['application_scenarios'], case_data['application_scenarios']),
+                'scenario': scenario_score,
                 'tech_req': matcher._tech_requirement_match(user_data['technical_requirements'], case_data['technical_requirements']),
                 'tech_stack': matcher._tech_stack_match(user_data['technology_stack'], case_data['technology_stack']),
                 'city_size': 1.0 if user_data['city_size'] == case_data['city_size'] else 0.3,
                 'budget': matcher._budget_match(user_data['budget_range'], case_data['budget_range']),
             }
             total_score = sum(scores[k] * matcher.weights[k] for k in scores)
-            scored_cases.append((total_score, case, scores))  # ⬅ 加上 scores
+            scored_cases.append((total_score, case, scores))
         except Exception as e:
             print(f"Error processing case {case.id}: {str(e)}")
 
-    # Sort by descending score
+    # 排序并选出Top 3
     scored_cases.sort(reverse=True, key=lambda x: x[0])
-
     results = []
-    for score, case, breakdown in scored_cases[:3]:  # Top 3 matches
+
+    for score, case, breakdown in scored_cases[:3]:
         try:
             case_data = matcher.parse_case(case)
-
             budget_range = [float(x) for x in case_data['budget_range']] if isinstance(case_data['budget_range'], list) else [0.0, 0.0]
 
             results.append({
@@ -312,14 +394,7 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
                 "city_size": case.city_size,
                 "budget_range": budget_range,
                 "match_reasons": matcher._get_match_reasons(user_data, case_data),
-
-                "match_breakdown": {
-                    "scenario": breakdown["scenario"],
-                    "tech_req": breakdown["tech_req"],
-                    "tech_stack": breakdown["tech_stack"],
-                    "city_size": breakdown["city_size"],
-                    "budget": breakdown["budget"]
-                }
+                "match_breakdown": breakdown
             })
 
         except Exception as e:
@@ -331,14 +406,14 @@ def analyze(data: Submission, db: Session = Depends(get_db)):
         "recommendations": results,
         "system_recommendation": recommend_solution(user_data)
     }
+
+
 @app.get("/generate_report/{submission_id}", response_class=HTMLResponse)
 def generate_report(submission_id: int, db: Session = Depends(get_db)):
-    # 获取提交记录
     submission = db.query(CaseSubmission).filter(CaseSubmission.id == submission_id).first()
     if not submission:
         return HTMLResponse(content="Submission not found", status_code=404)
 
-    # 获取推荐结果（复用分析逻辑）
     cases = db.query(BlockchainCase).all()
     matcher = CaseMatcher()
     user_data = matcher.parse_input(Submission(
@@ -361,12 +436,11 @@ def generate_report(submission_id: int, db: Session = Depends(get_db)):
 
 @app.get("/download_pdf/{submission_id}")
 def download_pdf(submission_id: int, db: Session = Depends(get_db)):
-    # 获取提交记录
     submission = db.query(CaseSubmission).filter(CaseSubmission.id == submission_id).first()
     if not submission:
         return HTMLResponse(content="Submission not found", status_code=404)
 
-    # 获取推荐结果
+    # get the result
     cases = db.query(BlockchainCase).all()
     matcher = CaseMatcher()
     user_data = matcher.parse_input(Submission(
@@ -380,14 +454,13 @@ def download_pdf(submission_id: int, db: Session = Depends(get_db)):
     top_cases = sorted(scored, key=lambda x: -x[0])[:3]
     parsed_cases = [matcher.parse_case(c[1]) | {'case_name': c[1].case_name} for c in top_cases]
 
-    # 生成 HTML
     html = generate_report_html(
         submission=user_data,
         recommendation=recommend_solution(user_data),
         cases=parsed_cases
     )
 
-    # 保存为 PDF
+    # save the pdf file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
         pdfkit.from_string(html, tmpfile.name)
         return FileResponse(tmpfile.name, filename=f"report_{submission_id}.pdf", media_type='application/pdf')

@@ -15,6 +15,9 @@ services:
       - db
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/blockchain
+    volumes:
+      - ./backend:/app
+
 
   db:
     image: postgres:13
